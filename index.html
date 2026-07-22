@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>사전 초과근무 계산</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/variable/woff2/SUIT-Variable.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    --accent: #0A84FF;      /* 시스템 블루 */
+    --warning: #FF9500;     /* 시스템 오렌지 — 초과·경고 강조 */
+    --label: #1C1C1E;       /* 기본 텍스트 */
+    --secondary: #8E8E93;   /* 보조 텍스트 */
+    --fill: rgba(120, 120, 128, 0.12);   /* 입력창·게이지 트랙 배경 */
+    --separator: rgba(60, 60, 67, 0.13); /* 헤어라인 구분선 */
+    --bg: #F2F2F7;          /* 시스템 그룹 배경 */
+    --card: #FFFFFF;
+    --today: rgba(10, 132, 255, 0.06);
+  }
+  :root[data-theme="dark"] {
+    --accent: #0A84FF;
+    --warning: #FF9F0A;
+    --label: #F2F2F7;
+    --secondary: #98989D;
+    --fill: rgba(120, 120, 128, 0.24);
+    --separator: rgba(84, 84, 88, 0.6);
+    --bg: #000000;
+    --card: #1C1C1E;
+    --today: rgba(10, 132, 255, 0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --accent: #0A84FF;
+      --warning: #FF9F0A;
+      --label: #F2F2F7;
+      --secondary: #98989D;
+      --fill: rgba(120, 120, 128, 0.24);
+      --separator: rgba(84, 84, 88, 0.6);
+      --bg: #000000;
+      --card: #1C1C1E;
+      --today: rgba(10, 132, 255, 0.14);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--label);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo",
+      "SUIT Variable", "SUIT", "Noto Sans KR", sans-serif;
+    font-size: 14px; -webkit-font-smoothing: antialiased; }
+  .num { font-variant-numeric: tabular-nums; }
+  .card { background: var(--card); border: none; border-radius: 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 0 0 1px var(--separator);
+    padding: 20px; margin-bottom: 14px; }
+  input, select, button { font-family: inherit; color: var(--label); }
+  input[type="time"], input[type="number"], input[type="text"], select {
+    border: none; background: var(--fill); border-radius: 8px;
+    padding: 6px 8px; font-size: 14px;
+  }
+  input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,.3); }
+  select { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 20px;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%238E8E93'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 7px center; }
+  button { background: none; border: none; cursor: pointer; padding: 0; }
+  .punch { font-size: 12px; font-weight: 600; color: var(--accent); background: rgba(10,132,255,.12);
+    border: none; border-radius: 8px; padding: 6px 11px; margin-left: 6px;
+    white-space: nowrap; min-height: 32px; }
+  .punch:active { background: rgba(10,132,255,.22); }
+  .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px;
+    color: var(--label); margin-right: 12px; cursor: pointer; min-height: 32px; }
+  .chk input { width: 18px; height: 18px; accent-color: var(--accent); }
+  details.notes summary { cursor: pointer; font-size: 12.5px; color: var(--secondary); list-style: none; font-weight: 600; }
+  details.notes summary::-webkit-details-marker { display: none; }
+  .arrow { font-size: 20px; color: var(--secondary); padding: 6px 12px; min-height: 40px; }
+  .arrow:hover { color: var(--accent); }
+  .flabel { font-size: 12px; font-weight: 600; color: var(--secondary); width: 34px; flex-shrink: 0; }
+  /* 스마트폰 최적화 */
+  @media (max-width: 520px) {
+    .card { padding: 16px 14px; border-radius: 16px; }
+    /* iOS 입력 포커스 시 화면 확대 방지: 16px 이상 */
+    input[type="text"], input[type="number"], select { font-size: 16px; padding: 7px 8px; }
+    .punch { padding: 7px 12px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useEffect } = React;
+
+const DAYS = ["월", "화", "수", "목", "금", "토", "일"];
+const STORAGE_KEY = "overtime:weeks"; // { [mondayISO]: days[] } 형태의 다주(多週) 저장소
+const OLD_STORAGE_KEY = "overtime:week"; // 이전 단일 주 저장 방식(마이그레이션용)
+const KEEP_RANGE_WEEKS = 2; // 오늘이 속한 주 기준 ±2주만 보관
+
+const FALLBACK_HOLIDAYS = {
+  "2026-01-01": "신정",
+  "2026-02-16": "설날 연휴", "2026-02-17": "설날", "2026-02-18": "설날 연휴",
+  "2026-03-01": "삼일절", "2026-03-02": "대체공휴일",
+  "2026-05-05": "어린이날",
+  "2026-05-24": "부처님오신날", "2026-05-25": "대체공휴일",
+  "2026-06-03": "지방선거일", "2026-06-06": "현충일",
+  "2026-08-15": "광복절", "2026-08-17": "대체공휴일",
+  "2026-09-24": "추석 연휴", "2026-09-25": "추석", "2026-09-26": "추석 연휴",
+  "2026-09-28": "대체공휴일",
+  "2026-10-03": "개천절", "2026-10-05": "대체공휴일", "2026-10-09": "한글날",
+  "2026-12-25": "성탄절",
+};
+
+async function fetchHolidayMap(years) {
+  const weekStart = mondayOf(new Date());
+  weekStart.setHours(0, 0, 0, 0);
+  const merged = {};
+  for (const year of years) {
+    const cacheKey = `kr-holidays:${year}`;
+    let map = null;
+    try {
+      const c = JSON.parse(localStorage.getItem(cacheKey));
+      if (c && c.fetchedAt >= weekStart.getTime() && c.map) map = c.map;
+    } catch (e) {}
+    if (!map) {
+      try {
+        const res = await fetch(`https://holidays.dist.be/${year}.json`);
+        if (res.ok) {
+          const arr = await res.json();
+          map = {};
+          arr.forEach((h) => { if (h.date && h.holiday !== false) map[h.date.slice(0, 10)] = h.name || "공휴일"; });
+        }
+      } catch (e) {}
+      if (!map || Object.keys(map).length === 0) {
+        try {
+          const res = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/KR`);
+          if (res.ok) {
+            const arr = await res.json();
+            map = {};
+            arr.forEach((h) => { map[h.date] = h.localName || h.name || "공휴일"; });
+          }
+        } catch (e) {}
+      }
+      if (map && Object.keys(map).length > 0) {
+        try { localStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), map })); } catch (e) {}
+      }
+    }
+    Object.assign(merged, map || {});
+  }
+  Object.keys(FALLBACK_HOLIDAYS).forEach((d) => {
+    if (!merged[d] && years.includes(Number(d.slice(0, 4)))) merged[d] = FALLBACK_HOLIDAYS[d];
+  });
+  return merged;
+}
+
+const DAY_TYPES = {
+  work: { label: "근무", credit: 0, needTime: true, minGuarantee: 240 },
+  full: { label: "연차", credit: 8, needTime: false, minGuarantee: 480 },
+  half: { label: "반차", credit: 4, needTime: true, minGuarantee: 480 },
+  quarter: { label: "반반차", credit: 2, needTime: true, minGuarantee: 360 },
+  holiday: { label: "휴일", credit: 8, needTime: false, minGuarantee: 480 },
+  weekend: { label: "주말", credit: 0, needTime: false, minGuarantee: 0 },
+};
+
+const parseTime = (t) => {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  return isNaN(h) || isNaN(m) ? null : h * 60 + m;
+};
+const fmtH = (min) => {
+  const a = Math.abs(min);
+  return `${min < 0 ? "-" : ""}${Math.floor(a / 60)}:${String(a % 60).padStart(2, "0")}`;
+};
+const fmtHK = (min) => {
+  const a = Math.abs(min);
+  const h = Math.floor(a / 60), m = a % 60;
+  return `${min < 0 ? "-" : ""}${h ? h + "시간" : ""}${m ? ` ${m}분` : h ? "" : "0분"}`.trim();
+};
+const WORK_MIN = 360;  // 06:00 — 근무 인정 시작
+const WORK_MAX = 1320; // 22:00 — 근무 인정 종료
+// 퇴근시간은 22:00~다음날 06:00 사이 값(자정 이후 포함)을 22:00으로 취급
+const clampWorkMinutes = (mins, isEnd) => {
+  if (isEnd && mins < WORK_MIN) return WORK_MAX;
+  return Math.min(WORK_MAX, Math.max(WORK_MIN, mins));
+};
+const minutesToHHMM = (mins) => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+const nowHHMM = (isEnd) => {
+  const n = new Date();
+  return minutesToHHMM(clampWorkMinutes(n.getHours() * 60 + n.getMinutes(), isEnd));
+};
+const toISO = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const mondayOf = (date) => {
+  const d = new Date(date);
+  const dow = d.getDay();
+  d.setDate(d.getDate() + (dow === 0 ? -6 : 1 - dow));
+  return d;
+};
+const weekDates = (mondayISO) => {
+  const base = new Date(mondayISO + "T00:00:00");
+  return DAYS.map((_, i) => {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    return toISO(d);
+  });
+};
+const mmdd = (iso) => iso.slice(5).replace("-", ".");
+const weekDiff = (mondayISOa, mondayISOb) =>
+  Math.round((new Date(mondayISOa + "T00:00:00") - new Date(mondayISOb + "T00:00:00")) / (7 * 86400000));
+const addWeeksISO = (mondayISO, delta) => {
+  const d = new Date(mondayISO + "T00:00:00");
+  d.setDate(d.getDate() + delta * 7);
+  return toISO(mondayOf(d));
+};
+
+// 24시간제 시간 입력 (HH:MM) — "800"→08:00, "1730"→17:30 자동 정규화
+function normalizeHHMM(v, isEnd) {
+  const digits = (v || "").replace(/[^0-9]/g, "");
+  if (!digits) return "";
+  let h, m;
+  if (digits.length <= 2) { h = Number(digits); m = 0; }
+  else if (digits.length === 3) { h = Number(digits.slice(0, 1)); m = Number(digits.slice(1)); }
+  else { h = Number(digits.slice(0, 2)); m = Number(digits.slice(2, 4)); }
+  if (isNaN(h) || h > 23) h = Math.min(23, h % 100);
+  if (isNaN(m) || m > 59) m = Math.min(59, m % 100);
+  return minutesToHHMM(clampWorkMinutes(h * 60 + m, isEnd));
+}
+
+function TimeInput({ value, onChange, style, isEnd }) {
+  const [text, setText] = useState(value || "");
+  useEffect(() => { setText(value || ""); }, [value]);
+  const commit = () => {
+    const n = normalizeHHMM(text, isEnd);
+    setText(n);
+    onChange(n);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      className="num"
+      placeholder="HH:MM"
+      maxLength={5}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") { commit(); e.target.blur(); } }}
+      style={{ textAlign: "center", ...style }}
+    />
+  );
+}
+
+function calcDay(d) {
+  const type = DAY_TYPES[d.type];
+  let worked = 0, raw = 0, statutory = 0, mealExtra = 0, manualNonWork = 0, totalNonWork = 0;
+  if (type.needTime) {
+    const s = parseTime(d.start), e = parseTime(d.end);
+    if (s != null && e != null && e > s) {
+      raw = e - s;
+      const nonWork = Math.round(parseFloat(d.nonWork) || 0);
+      const deduction = (net) => {
+        const stat = Math.floor(Math.max(0, net) / 240) * 30;
+        let meal = 0;
+        if (d.am) meal += 30;
+        if (d.lunch && net < 480) meal += 30;
+        if (d.pm && net < 720) meal += 30;
+        return { stat, meal, total: stat + meal + nonWork };
+      };
+      let net = raw, last = -1;
+      for (let k = 0; k < 30; k++) {
+        const D = deduction(net);
+        const next = Math.max(0, raw - D.total);
+        if (next === net) break;
+        if (next === last) { net = Math.min(net, next); break; }
+        last = net; net = next;
+      }
+      const D = deduction(net);
+      statutory = D.stat; mealExtra = D.meal;
+      worked = Math.max(0, raw - D.total);
+      totalNonWork = D.total; manualNonWork = nonWork;
+    }
+  }
+  const credit = type.credit * 60;
+  return { worked, credit, total: worked + credit, hasInput: raw > 0, statutory, mealExtra, manualNonWork, totalNonWork };
+}
+
+function makeWeek(mondayISO, holidayMap) {
+  const dates = weekDates(mondayISO);
+  return DAYS.map((name, i) => {
+    const iso = dates[i];
+    const isWeekend = i >= 5;
+    const holidayName = holidayMap[iso];
+    return {
+      name, date: iso,
+      holidayName: !isWeekend ? holidayName : undefined,
+      type: isWeekend ? "weekend" : holidayName ? "holiday" : "work",
+      start: "08:00", end: "17:00", nonWork: "",
+      am: false, lunch: true, pm: false,
+    };
+  });
+}
+
+function loadWeeksStore() {
+  try {
+    const v = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    return v && typeof v === "object" ? v : {};
+  } catch (e) { return {}; }
+}
+
+// 이전(단일 주) 저장 방식 데이터를 새 다주 저장소로 옮기고 이전 키는 제거
+function migrateOldStore(store, curMon) {
+  try {
+    const old = JSON.parse(localStorage.getItem(OLD_STORAGE_KEY));
+    if (old && old.monday && Array.isArray(old.days) && old.days.length === 7 && !store[old.monday])
+      store[old.monday] = old.days;
+  } catch (e) {}
+  localStorage.removeItem(OLD_STORAGE_KEY);
+  return store;
+}
+
+// 오늘이 속한 주(curMon) 기준 ±KEEP_RANGE_WEEKS를 벗어난 주는 저장소에서 제거
+function pruneWeeksStore(store, curMon) {
+  const pruned = {};
+  Object.keys(store).forEach((mISO) => {
+    if (Array.isArray(store[mISO]) && Math.abs(weekDiff(mISO, curMon)) <= KEEP_RANGE_WEEKS)
+      pruned[mISO] = store[mISO];
+  });
+  return pruned;
+}
+
+// 보관 중인 주간 데이터(±KEEP_RANGE_WEEKS)가 걸쳐 있는 연도만 추림 (연말·연초 주 대비)
+function relevantHolidayYears(curMon) {
+  const years = new Set();
+  for (let w = -KEEP_RANGE_WEEKS; w <= KEEP_RANGE_WEEKS; w++) {
+    weekDates(addWeeksISO(curMon, w)).forEach((d) => years.add(Number(d.slice(0, 4))));
+  }
+  return years;
+}
+
+// 주간 데이터가 보관하는 연도 범위를 벗어난 공휴일 캐시(kr-holidays:*)는 삭제
+function pruneHolidayCache(curMon) {
+  const years = relevantHolidayYears(curMon);
+  try {
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("kr-holidays:") && !years.has(Number(k.slice("kr-holidays:".length))))
+      .forEach((k) => localStorage.removeItem(k));
+  } catch (e) {}
+}
+
+function loadInitial() {
+  const curMon = toISO(mondayOf(new Date()));
+  const store = pruneWeeksStore(migrateOldStore(loadWeeksStore(), curMon), curMon);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); } catch (e) {}
+  pruneHolidayCache(curMon);
+  const days = store[curMon] && store[curMon].length === 7 ? store[curMon] : makeWeek(curMon, FALLBACK_HOLIDAYS);
+  return { monday: curMon, days };
+}
+
+function App() {
+  const init = useMemo(loadInitial, []);
+  const [monday, setMonday] = useState(init.monday);
+  const [days, setDays] = useState(init.days);
+  const [holidayMap, setHolidayMap] = useState(FALLBACK_HOLIDAYS);
+  const todayISO = toISO(new Date());
+
+  useEffect(() => {
+    let alive = true;
+    const years = [...new Set(weekDates(monday).map((d) => Number(d.slice(0, 4))))];
+    fetchHolidayMap(years).then((map) => {
+      if (!alive) return;
+      setHolidayMap(map);
+      setDays((prev) =>
+        prev.map((d, i) => {
+          if (i >= 5) return d;
+          const name = map[d.date];
+          if (name && d.type === "work") return { ...d, type: "holiday", holidayName: name };
+          if (name && d.type === "holiday") return { ...d, holidayName: name };
+          return d;
+        })
+      );
+    });
+    return () => { alive = false; };
+  }, [monday]);
+
+  useEffect(() => {
+    try {
+      const curMon = toISO(mondayOf(new Date()));
+      const store = pruneWeeksStore(loadWeeksStore(), curMon);
+      if (Math.abs(weekDiff(monday, curMon)) <= KEEP_RANGE_WEEKS) store[monday] = days;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+      pruneHolidayCache(curMon);
+    } catch (e) {}
+  }, [days, monday]);
+
+  // 오늘이 속한 주 기준 ±KEEP_RANGE_WEEKS 이내로만 이동 가능(범위 내는 미방문 주라도 이동 가능, 이동 시 빈 주 생성)
+  const withinKeepRange = (m) => Math.abs(weekDiff(m, toISO(mondayOf(new Date())))) <= KEEP_RANGE_WEEKS;
+  const shiftWeek = (delta) => {
+    const m = addWeeksISO(monday, delta);
+    if (!withinKeepRange(m)) return;
+    const store = loadWeeksStore();
+    setMonday(m);
+    setDays(store[m] && store[m].length === 7 ? store[m] : makeWeek(m, holidayMap));
+  };
+  const canPrev = withinKeepRange(addWeeksISO(monday, -1));
+  const canNext = withinKeepRange(addWeeksISO(monday, 1));
+
+  // 현재 표시 중인 주의 데이터를 빈 상태로 초기화
+  const resetWeek = () => {
+    if (!window.confirm("이번 주 입력 데이터를 초기화할까요?")) return;
+    setDays(makeWeek(monday, holidayMap));
+  };
+
+  const setDay = (i, patch) =>
+    setDays((prev) => prev.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+
+  const calc = useMemo(() => {
+    const perDay = days.map(calcDay);
+    const totalMin = perDay.reduce((a, d) => a + d.total, 0);
+    const overtime = Math.max(0, totalMin - 2400);
+    const toForty = Math.max(0, 2400 - totalMin);
+
+    const actuals = days.map((d, i) => {
+      const p = perDay[i];
+      const type = DAY_TYPES[d.type];
+      return type.needTime && !p.hasInput ? type.minGuarantee : p.total;
+    });
+    const mins = days.map((d) => DAY_TYPES[d.type].minGuarantee);
+    const G = days.map((_, i) => {
+      let sum = 0;
+      for (let j = 0; j < 7; j++) sum += j <= i ? actuals[j] : mins[j];
+      return sum;
+    });
+    const baseG = mins.reduce((a, b) => a + b, 0);
+    const dayOT = days.map((_, i) => {
+      const prev = i === 0 ? Math.max(0, baseG - 2400) : Math.max(0, G[i - 1] - 2400);
+      const now = Math.max(0, G[i] - 2400);
+      return { ot: Math.max(0, now - prev), cum: now };
+    });
+
+    const warnings = [];
+    days.forEach((d, i) => {
+      const p = perDay[i];
+      const type = DAY_TYPES[d.type];
+      if (type.needTime && p.hasInput && p.worked < 240)
+        warnings.push(`${d.name}요일 필수 근무 4시간 미달 (실근무 ${fmtH(p.worked)})`);
+    });
+    if (totalMin > 3120) warnings.push("주 52시간 상한 초과");
+
+    return { perDay, dayOT, totalMin, overtime, toForty, warnings };
+  }, [days]);
+
+  const pctAll = Math.min(100, (calc.totalMin / 3120) * 100);
+  const mark40 = (40 / 52) * 100;
+  const pctAccent = Math.min(pctAll, mark40);
+  const pctOver = Math.max(0, pctAll - mark40);
+  const weekLabel = `${mmdd(monday)} – ${mmdd(weekDates(monday)[6])}`;
+
+  return (
+    <div style={{ maxWidth: 660, margin: "0 auto", padding: "24px 14px 60px" }}>
+
+      {/* 헤더 */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 6px 16px" }}>
+        <div style={{ fontSize: 21, fontWeight: 800, color: "var(--label)", letterSpacing: "-0.02em" }}>사전 초과근무 계산</div>
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <button className="arrow" onClick={() => shiftWeek(-1)} disabled={!canPrev} style={{ opacity: canPrev ? 1 : 0.3, cursor: canPrev ? "pointer" : "default" }}>‹</button>
+          <span className="num" style={{ fontSize: 13, color: "var(--secondary)", minWidth: 102, textAlign: "center", fontWeight: 700 }}>{weekLabel}</span>
+          <button className="arrow" onClick={() => shiftWeek(1)} disabled={!canNext} style={{ opacity: canNext ? 1 : 0.3, cursor: canNext ? "pointer" : "default" }}>›</button>
+        </div>
+      </div>
+
+      {/* 요약 카드 */}
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13, color: "var(--secondary)", fontWeight: 700 }}>
+            {calc.overtime > 0 ? "이번 주 초과근무" : "40시간까지 남은 시간"}
+          </span>
+          <button onClick={resetWeek} style={{ fontSize: 12, color: "var(--secondary)", fontWeight: 600 }}>초기화</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 4 }}>
+          <span className="num" style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-0.02em", color: calc.overtime > 0 ? "var(--warning)" : "var(--label)" }}>
+            {calc.overtime > 0 ? "+" + fmtH(calc.overtime) : fmtH(calc.toForty)}
+          </span>
+          <span className="num" style={{ fontSize: 13, color: "var(--secondary)", fontWeight: 600 }}>누적 {fmtH(calc.totalMin)} / 40:00</span>
+        </div>
+
+        {/* 게이지 */}
+        <div style={{ position: "relative", height: 8, background: "var(--fill)", borderRadius: 4, margin: "16px 0 6px", overflow: "hidden" }}>
+          <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: pctAccent + "%", background: "var(--accent)", transition: "width .3s" }} />
+          {pctOver > 0 && (
+            <div style={{ position: "absolute", left: mark40 + "%", top: 0, bottom: 0, width: pctOver + "%", background: "var(--warning)", transition: "width .3s" }} />
+          )}
+          <div style={{ position: "absolute", left: mark40 + "%", top: 0, bottom: 0, width: 1.5, background: "rgba(128,128,128,.5)" }} />
+        </div>
+        <div className="num" style={{ display: "flex", fontSize: 10.5, color: "var(--secondary)", position: "relative", fontWeight: 700 }}>
+          <span>0h</span>
+          <span style={{ position: "absolute", left: mark40 + "%", transform: "translateX(-50%)" }}>40h</span>
+          <span style={{ marginLeft: "auto" }}>52h</span>
+        </div>
+
+        {/* 경고 */}
+        {calc.warnings.length > 0 && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--separator)", fontSize: 13.5, lineHeight: 1.9 }}>
+            {calc.warnings.map((w, i) => (
+              <div key={"w" + i} style={{ color: "var(--warning)", fontSize: 12.5, fontWeight: 600 }}>{w}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 요일 카드 */}
+      <div className="card" style={{ padding: "6px 20px" }}>
+        {days.map((d, i) => {
+          const p = calc.perDay[i];
+          const type = DAY_TYPES[d.type];
+          const ot = calc.dayOT[i].ot;
+          const isToday = d.date === todayISO;
+          return (
+            <div key={i} style={{ borderTop: i ? "1px solid var(--separator)" : "none", background: isToday ? "var(--today)" : "transparent", margin: "0 -20px", padding: "12px 20px", borderRadius: isToday ? 12 : 0 }}>
+              {/* 헤더행: 요일·날짜·구분 | 인정시간 */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontWeight: 700, fontSize: 15, color: i >= 5 || d.holidayName ? "var(--warning)" : "var(--label)", flexShrink: 0 }}>{d.name}</span>
+                <span className="num" style={{ fontSize: 12, color: "var(--secondary)", fontWeight: 700, flexShrink: 0 }}>{mmdd(d.date)}</span>
+                <select value={d.type} onChange={(e) => setDay(i, { type: e.target.value })}
+                  style={{ width: 78, fontSize: 13, padding: "3px 6px", color: "var(--secondary)", fontWeight: 700, flexShrink: 0 }}>
+                  {Object.entries(DAY_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                </select>
+                {d.holidayName && <span style={{ fontSize: 11, color: "var(--warning)", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.holidayName}</span>}
+                <span style={{ marginLeft: "auto", textAlign: "right", flexShrink: 0 }}>
+                  <span className="num" style={{ fontWeight: 700, fontSize: 20, color: "var(--label)" }}>{p.total > 0 ? fmtH(p.total) : type.needTime ? "" : type.credit ? "8:00" : "—"}</span>
+                  {ot > 0 && (
+                    <div className="num" style={{ fontSize: 11, color: "var(--warning)", fontWeight: 800 }}>+{fmtH(ot)} 신청</div>
+                  )}
+                </span>
+              </div>
+
+              {type.needTime && (
+                <React.Fragment>
+                  {/* 1행: 출근 + 퇴근 */}
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 6, marginTop: 10 }}>
+                    <span className="flabel">출근</span>
+                    <TimeInput value={d.start} onChange={(v) => setDay(i, { start: v })} style={{ width: 68 }} />
+                    <button className="punch" onClick={() => setDay(i, { start: nowHHMM() })}>지금</button>
+                    <span style={{ flex: 1, minWidth: 10 }} />
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      <span className="flabel">퇴근</span>
+                      <TimeInput value={d.end} onChange={(v) => setDay(i, { end: v })} style={{ width: 68 }} isEnd />
+                      <button className="punch" onClick={() => setDay(i, { end: nowHHMM(true) })}>지금</button>
+                    </span>
+                  </div>
+                  {/* 2행: 식사 체크 + 비업무 */}
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 6, marginTop: 6 }}>
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      <label className="chk"><input type="checkbox" checked={d.am} onChange={(e) => setDay(i, { am: e.target.checked })} />아침</label>
+                      <label className="chk"><input type="checkbox" checked={d.lunch} onChange={(e) => setDay(i, { lunch: e.target.checked })} />점심</label>
+                      <label className="chk"><input type="checkbox" checked={d.pm} onChange={(e) => setDay(i, { pm: e.target.checked })} />저녁</label>
+                    </span>
+                    <span style={{ flex: 1, minWidth: 10 }} />
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      <span className="flabel" style={{ width: "auto", marginRight: 4 }}>추가 비업무</span>
+                      <input type="number" className="num" min="0" step="5" placeholder="0" value={d.nonWork}
+                        onChange={(e) => setDay(i, { nonWork: e.target.value })} style={{ width: 58, textAlign: "right" }} />
+                      <span style={{ fontSize: 12, color: "var(--secondary)", marginLeft: 4, fontWeight: 600 }}>분</span>
+                    </span>
+                  </div>
+                  {p.totalNonWork > 0 && (
+                    <div style={{ textAlign: "right", fontSize: 11, color: "var(--secondary)", fontWeight: 600, marginTop: 4 }}>
+                      총 비업무 {fmtHK(p.totalNonWork)}
+                    </div>
+                  )}
+                </React.Fragment>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 규칙 카드 */}
+      <div className="card">
+        <details className="notes">
+          <summary>계산 규칙 보기</summary>
+          <div style={{ fontSize: 12, color: "var(--secondary)", lineHeight: 2, marginTop: 10, fontWeight: 500 }}>
+            주 40시간 초과분이 초과근무이며, 발생 당일 퇴근 전에 사전 신청합니다.<br />
+            신청량은 [당일까지 실적 + 남은 요일 최소 보장시간(근무일 4h, 휴일·연차 8h)]이 40시간을 넘는 증가분입니다.<br />
+            법정휴게는 순근무 4시간마다 30분 자동 차감됩니다 (8h→1시간, 12h→1시간 30분).<br />
+            점심은 순근무 8시간 미만, 저녁은 12시간 미만일 때만 30분 추가 차감, 아침은 항상 30분 차감됩니다.<br />
+            휴일·연차 8시간, 반차 4시간, 반반차 2시간 인정, 주말 미산입. 모든 근무일 실근무 4시간 필수.<br />
+            공휴일은 매주 월요일 자동 갱신되고, 입력은 이 기기에 저장되어 같은 주 동안 유지되며 새 주에 초기화됩니다.
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
