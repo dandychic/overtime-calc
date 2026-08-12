@@ -155,6 +155,7 @@ const DAY_TYPES = {
   full: { label: "연차", credit: 8, needTime: false, minGuarantee: 480 },
   half: { label: "반차", credit: 4, needTime: true, minGuarantee: 480 },
   quarter: { label: "반반차", credit: 2, needTime: true, minGuarantee: 360 },
+  trip: { label: "국내출장", credit: 8, needTime: false, minGuarantee: 480, hasExtra: true },
   holiday: { label: "휴일", credit: 8, needTime: false, minGuarantee: 480 },
   weekend: { label: "주말", credit: 0, needTime: false, minGuarantee: 0 },
 };
@@ -247,6 +248,22 @@ function TimeInput({ value, onChange, style, isEnd }) {
   );
 }
 
+// 수령 10분, 취식 30분(수령 10분 포함). 수령+취식 별도 조합은 없음 — 단일 선택.
+const MEAL_OPTIONS = [
+  { value: "none", label: "안함", min: 0 },
+  { value: "pickup", label: "수령", min: 10 },
+  { value: "eat", label: "취식", min: 30 },
+];
+const MEAL_MIN = Object.fromEntries(MEAL_OPTIONS.map((o) => [o.value, o.min]));
+
+function MealSelect({ value, onChange, style }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={style}>
+      {MEAL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
 function calcDay(d) {
   const type = DAY_TYPES[d.type];
   let worked = 0, raw = 0, statutory = 0, mealExtra = 0, manualNonWork = 0, totalNonWork = 0;
@@ -258,9 +275,9 @@ function calcDay(d) {
       const deduction = (net) => {
         const stat = Math.floor(Math.max(0, net) / 240) * 30;
         let meal = 0;
-        if (d.am) meal += 30;
+        meal += MEAL_MIN[d.amMeal] || 0;
         if (d.lunch && net < 480) meal += 30;
-        if (d.pm && net < 720) meal += 30;
+        if (d.pmMeal !== "none" && net < 720) meal += MEAL_MIN[d.pmMeal] || 0;
         return { stat, meal, total: stat + meal + nonWork };
       };
       let net = raw, last = -1;
@@ -278,7 +295,8 @@ function calcDay(d) {
     }
   }
   const credit = type.credit * 60;
-  return { worked, credit, total: worked + credit, hasInput: raw > 0, statutory, mealExtra, manualNonWork, totalNonWork };
+  const extra = type.hasExtra ? Math.round(parseFloat(d.extraWork) || 0) : 0;
+  return { worked, credit, extra, total: worked + credit + extra, hasInput: raw > 0, statutory, mealExtra, manualNonWork, totalNonWork };
 }
 
 function makeWeek(mondayISO, holidayMap) {
@@ -291,8 +309,8 @@ function makeWeek(mondayISO, holidayMap) {
       name, date: iso,
       holidayName: !isWeekend ? holidayName : undefined,
       type: isWeekend ? "weekend" : holidayName ? "holiday" : "work",
-      start: "08:00", end: "17:00", nonWork: "",
-      am: false, lunch: true, pm: false,
+      start: "08:00", end: "17:00", nonWork: "", extraWork: "",
+      amMeal: "none", lunch: true, pmMeal: "none",
     };
   });
 }
@@ -530,6 +548,15 @@ function App() {
                 </span>
               </div>
 
+              {type.hasExtra && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: 10 }}>
+                  <span className="flabel" style={{ width: "auto", marginRight: 4 }}>추가근무</span>
+                  <input type="number" className="num" min="0" step="5" placeholder="0" value={d.extraWork}
+                    onChange={(e) => setDay(i, { extraWork: e.target.value })} style={{ width: 58, textAlign: "right" }} />
+                  <span style={{ fontSize: 12, color: "var(--secondary)", marginLeft: 4, fontWeight: 600 }}>분</span>
+                </div>
+              )}
+
               {type.needTime && (
                 <React.Fragment>
                   {/* 1행: 출근 + 퇴근 */}
@@ -546,10 +573,14 @@ function App() {
                   </div>
                   {/* 2행: 식사 체크 + 비업무 */}
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 6, marginTop: 6 }}>
-                    <span style={{ display: "inline-flex", alignItems: "center" }}>
-                      <label className="chk"><input type="checkbox" checked={d.am} onChange={(e) => setDay(i, { am: e.target.checked })} />아침</label>
+                    <span style={{ display: "inline-flex", alignItems: "center", flexWrap: "wrap", rowGap: 4 }}>
+                      <span className="flabel" style={{ width: "auto", marginRight: 4 }}>아침</span>
+                      <MealSelect value={d.amMeal} onChange={(v) => setDay(i, { amMeal: v })}
+                        style={{ width: 84, fontSize: 13, padding: "3px 6px", fontWeight: 700, marginRight: 10 }} />
                       <label className="chk"><input type="checkbox" checked={d.lunch} onChange={(e) => setDay(i, { lunch: e.target.checked })} />점심</label>
-                      <label className="chk"><input type="checkbox" checked={d.pm} onChange={(e) => setDay(i, { pm: e.target.checked })} />저녁</label>
+                      <span className="flabel" style={{ width: "auto", marginRight: 4 }}>저녁</span>
+                      <MealSelect value={d.pmMeal} onChange={(v) => setDay(i, { pmMeal: v })}
+                        style={{ width: 84, fontSize: 13, padding: "3px 6px", fontWeight: 700 }} />
                     </span>
                     <span style={{ flex: 1, minWidth: 10 }} />
                     <span style={{ display: "inline-flex", alignItems: "center" }}>
@@ -579,8 +610,10 @@ function App() {
             주 40시간 초과분이 초과근무이며, 발생 당일 퇴근 전에 사전 신청합니다.<br />
             신청량은 [당일까지 실적 + 남은 요일 최소 보장시간(근무일 4h, 휴일·연차 8h)]이 40시간을 넘는 증가분입니다.<br />
             법정휴게는 순근무 4시간마다 30분 자동 차감됩니다 (8h→1시간, 12h→1시간 30분).<br />
-            점심은 순근무 8시간 미만, 저녁은 12시간 미만일 때만 30분 추가 차감, 아침은 항상 30분 차감됩니다.<br />
-            휴일·연차 8시간, 반차 4시간, 반반차 2시간 인정, 주말 미산입. 모든 근무일 실근무 4시간 필수.<br />
+            점심은 순근무 8시간 미만일 때만 30분 추가 차감됩니다.<br />
+            아침·저녁은 수령(10분) 또는 취식(30분, 수령 포함) 중 하나를 선택할 수 있으며, 아침은 항상 차감되고 저녁은 순근무 12시간 미만일 때만 차감됩니다.<br />
+            휴일·연차·출장 8시간, 반차 4시간, 반반차 2시간 인정, 주말 미산입. 모든 근무일 실근무 4시간 필수.<br />
+            출장은 8시간 고정 인정에 추가근무 입력분을 더해 인정시간을 계산합니다.<br />
             공휴일은 매주 월요일 자동 갱신되고, 입력은 이 기기에 저장되어 같은 주 동안 유지되며 새 주에 초기화됩니다.
           </div>
         </details>
